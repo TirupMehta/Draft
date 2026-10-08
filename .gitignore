@@ -1,0 +1,22 @@
+# Build output — reproducible from source via build_exe.bat
+dist/
+build/
+*.spec
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Draft user data (per-machine, never commit)
+config.json
+history.json
+stats.json
+draft.log
+boot.txt
+crash.txt
+
+# Hugging Face model cache (downloaded on first run)
+.cache/

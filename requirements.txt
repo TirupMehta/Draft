@@ -1,0 +1,11 @@
+faster-whisper>=1.0
+nvidia-cublas-cu12
+cactus-needle[mic]>=3.0
+numpy
+sounddevice
+soxr
+customtkinter
+pystray
+pillow
+keyboard
+pyperclip
