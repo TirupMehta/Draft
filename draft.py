@@ -26,7 +26,7 @@ import traceback
 import wave
 
 APP_NAME = "Draft"
-APP_VERSION = "3.3.0"
+APP_VERSION = "3.5.0"
 SAMPLE_RATE = 16000
 MAX_SECONDS = 60
 MAX_SAMPLES = SAMPLE_RATE * MAX_SECONDS
@@ -91,10 +91,39 @@ HISTORY_PATH = os.path.join(DATA_DIR, "history.json")
 STATS_PATH = os.path.join(DATA_DIR, "stats.json")
 LOG_PATH = os.path.join(DATA_DIR, "draft.log")
 
-logging.basicConfig(filename=LOG_PATH, level=logging.INFO,
+logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(message)s",
                     encoding="utf-8")
+try:
+    from logging.handlers import RotatingFileHandler
+    _handler = RotatingFileHandler(LOG_PATH, maxBytes=1_000_000,
+                                   backupCount=3, encoding="utf-8")
+    _handler.setFormatter(logging.Formatter(
+        "%(asctime)s %(levelname)s %(message)s"))
+    logging.getLogger().addHandler(_handler)
+except Exception:
+    try:
+        _fallback = logging.FileHandler(LOG_PATH, encoding="utf-8")
+        _fallback.setFormatter(logging.Formatter(
+            "%(asctime)s %(levelname)s %(message)s"))
+        logging.getLogger().addHandler(_fallback)
+    except Exception:
+        pass
 log = logging.getLogger("draft")
+
+
+def _atomic_write_json(path: str, payload: dict | list) -> None:
+    """Write JSON atomically: temp file + os.replace, so a crash or
+    power loss never leaves a half-written config/history/stats file."""
+    tmp = f"{path}.{os.getpid()}.tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh, indent=2, ensure_ascii=False)
+        fh.flush()
+        try:
+            os.fsync(fh.fileno())
+        except Exception:
+            pass
+    os.replace(tmp, path)
 
 
 def _excepthook(etype, value, tb):
@@ -105,52 +134,64 @@ sys.excepthook = _excepthook
 os.environ.setdefault("NEEDLE_TELEMETRY", "0")
 
 # --------------------------------------------------------------------------
-# Themes — "Golden Hour" default, "Midnight" alt
+# Themes — quiet, system-like materials with one purposeful accent.
 # --------------------------------------------------------------------------
 
 THEMES = {
     "golden": {
-        "bg": "#100d0b",
-        "card": "#1e1714",
-        "card2": "#2a2019",
-        "border": "#453522",
-        "glow": "#6b4f2a",
-        "dim": "#8a6f3f",
-        "fg": "#f5ede3",
-        "muted": "#c0ac90",
-        "accent": "#e8bd72",
-        "accent_hover": "#c99e52",
-        "rose": "#c98a7d",
-        "green": "#7ecba1",
-        "red": "#e0605e",
-        "yellow": "#e8c56a",
+        "bg": "#000000",
+        "card": "#171719",
+        "card2": "#242428",
+        "field": "#0e0e10",
+        "border": "#3b3b40",
+        "hairline": "#2c2c30",
+        "glow": "#3a6fc7",
+        "dim": "#8e8e93",
+        "fg": "#f5f5f7",
+        "muted": "#b0b0b5",
+        "accent": "#0a84ff",
+        "accent_hover": "#409cff",
+        "accent_ink": "#ffffff",
+        "paper": "#f5f5f7",
+        "paper_ink": "#1d1d1f",
+        "rose": "#ff9f9a",
+        "green": "#30d158",
+        "red": "#ff453a",
+        "yellow": "#ffd60a",
     },
     "midnight": {
-        "bg": "#0b1020",
-        "card": "#141b30",
-        "card2": "#1c2440",
-        "border": "#2c3a5e",
-        "glow": "#3d5a99",
-        "dim": "#54678f",
-        "fg": "#e8ecf7",
-        "muted": "#93a0c0",
-        "accent": "#7fb2ff",
-        "accent_hover": "#6398e8",
-        "rose": "#c99ab8",
-        "green": "#7ecba1",
-        "red": "#e0605e",
-        "yellow": "#e8c56a",
+        "bg": "#f5f5f7",
+        "card": "#ffffff",
+        "card2": "#ebebf0",
+        "field": "#f7f7f9",
+        "border": "#d4d4d9",
+        "hairline": "#e2e2e7",
+        "glow": "#71aef7",
+        "dim": "#86868b",
+        "fg": "#1d1d1f",
+        "muted": "#515154",
+        "accent": "#0071e3",
+        "accent_hover": "#0077ed",
+        "accent_ink": "#ffffff",
+        "paper": "#ffffff",
+        "paper_ink": "#1d1d1f",
+        "rose": "#d70015",
+        "green": "#248a3d",
+        "red": "#d70015",
+        "yellow": "#a15c00",
     },
 }
 THEME_NAMES = tuple(THEMES)
+THEME_LABELS = {"golden": "Obsidian", "midnight": "Frost"}
+THEME_KEYS_BY_LABEL = {label: key for key, label in THEME_LABELS.items()}
 
 
 def F_HEAD(size=18):
-    return ("Georgia", size, "bold")
+    return ("Segoe UI Variable Display", size, "bold")
 
 
 def F_BODY(size=12):
-    return ("Segoe UI", size)
+    return ("Segoe UI Variable Text", size)
 
 
 def F_MONO(size=10):
@@ -237,8 +278,7 @@ def load_config() -> dict:
 
 def save_config(cfg: dict) -> None:
     try:
-        with open(CONFIG_PATH, "w", encoding="utf-8") as fh:
-            json.dump(cfg, fh, indent=2)
+        _atomic_write_json(CONFIG_PATH, cfg)
     except Exception as exc:
         log.warning("save_config: %s", exc)
 
@@ -256,8 +296,7 @@ def load_stats() -> dict:
 
 def save_stats(s: dict) -> None:
     try:
-        with open(STATS_PATH, "w", encoding="utf-8") as fh:
-            json.dump(s, fh, indent=1)
+        _atomic_write_json(STATS_PATH, s)
     except Exception as exc:
         log.warning("save_stats: %s", exc)
 
@@ -424,17 +463,19 @@ _SENT_END = re.compile(r"([.!?…])\s+([a-zäöüßàâçéèêëîïôûù])")
 _MISSING_SPACE_AFTER = re.compile(r"([,;!?])(?=[A-Za-zÀ-ÿ0-9])")
 _MISSING_SPACE_PERIOD = re.compile(r"(?<=[a-zäöüßàâçéèêëîïôûù])\.(?=[A-ZÄÖÜÀÂÇÉÈÊËÎÏÔÛÙ])")
 _MISSING_SPACE_COLON = re.compile(r":(?=[A-Za-zÀ-ÿ])")
+_STANDALONE_I = re.compile(r"\bi\b")
 
 
 def _cap_match(match: "re.Match") -> str:
     return match.group(1) + " " + match.group(2).upper()
 
 
-def clean_text(text: str, trailing_space: bool = True) -> str:
-    t = (text or "").strip()
+def _clean_single_line(line: str, lang: str = "en") -> str:
+    """Spacing/punctuation cleanup for one line (no newline handling)."""
+    t = (line or "").strip()
     if not t:
         return ""
-    t = _MULTI_SPACE.sub(" ", t.replace("\n", " "))
+    t = _MULTI_SPACE.sub(" ", t)
     t = _SPACE_BEFORE_PUNCT.sub(r"\1", t)
     t = _MISSING_SPACE_AFTER.sub(r"\1 ", t)
     t = _MISSING_SPACE_PERIOD.sub(". ", t)
@@ -442,6 +483,40 @@ def clean_text(text: str, trailing_space: bool = True) -> str:
     t = _MULTI_SPACE.sub(" ", t)
     t = _OPEN_SPACE_AFTER.sub(r"\1", t)
     t = _SENT_END.sub(_cap_match, t)
+    if (lang or "en")[:2].lower() == "en":
+        # Dictation constantly yields lowercase "i" mid-sentence
+        # ("he said i am here"); \b keeps real words ("amber") intact
+        # and also fixes contractions ("i'm" -> "I'm").
+        t = _STANDALONE_I.sub("I", t)
+    return t
+
+
+def clean_text(text: str, trailing_space: bool = True,
+               lang: str = "en") -> str:
+    """Light formatting that preserves voice-command line breaks.
+
+    Inline \"new paragraph\" / \"new line\" produce \\n\\n / \\n upstream;
+    each paragraph/line is cleaned separately so breaks survive, and each
+    new paragraph starts capitalized.
+    """
+    t = (text or "").strip()
+    if not t:
+        return ""
+    paras = re.split(r"\n\s*\n", t)
+    cleaned_paras = []
+    for para in paras:
+        lines = [_clean_single_line(ln, lang=lang) for ln in para.split("\n")]
+        lines = [ln for ln in lines if ln]
+        if not lines:
+            continue
+        cleaned = "\n".join(lines)
+        if cleaned and cleaned[0].islower():
+            cleaned = cleaned[0].upper() + cleaned[1:]
+        cleaned_paras.append(cleaned)
+    t = "\n\n".join(cleaned_paras)
+    # Capitalize after a sentence that ends right before a single newline.
+    t = re.sub(r"([.!?…])\n+([a-zäöüßàâçéèêëîïôûù])",
+               lambda m: m.group(1) + "\n" + m.group(2).upper(), t)
     if t and t[0].islower():
         t = t[0].upper() + t[1:]
     if trailing_space and not t.endswith((" ", "\n")):
@@ -450,13 +525,14 @@ def clean_text(text: str, trailing_space: bool = True) -> str:
 
 
 _COMMAND_PATTERNS = (
-    (re.compile(r"^\s*scratch that\s*[.!]?\s*$", re.I), "scratch"),
-    (re.compile(r"^\s*new paragraph\s*[.!]?\s*$", re.I), "paragraph"),
-    (re.compile(r"^\s*new line\s*[.!]?\s*$", re.I), "newline"),
+    (re.compile(r"^\s*scratch (?:that|it)\s*[.!?]?\s*$", re.I), "scratch"),
+    (re.compile(r"^\s*(?:delete|forget) that\s*[.!?]?\s*$", re.I), "scratch"),
+    (re.compile(r"^\s*new[\s-]?paragraph\s*[.!?]?\s*$", re.I), "paragraph"),
+    (re.compile(r"^\s*new[\s-]?line\s*[.!?]?\s*$", re.I), "newline"),
 )
 _INLINE_COMMANDS = (
-    (re.compile(r"\bnew paragraph\b[,.!]?", re.I), "\n\n"),
-    (re.compile(r"\bnew line\b[,.!]?", re.I), "\n"),
+    (re.compile(r"\bnew[\s-]?paragraph\b[,.!]?", re.I), "\n\n"),
+    (re.compile(r"\bnew[\s-]?line\b[,.!]?", re.I), "\n"),
 )
 
 
@@ -476,9 +552,26 @@ def apply_voice_commands(text: str):
     return "text", out
 
 
+# Join "X dot Y" only when the parts look like a domain, file or
+# version — otherwise ordinary phrases ("the dot product") get mangled.
+_DOT_EVIDENCE = frozenset(
+    "com in org net io ai dev app co uk us eu de fr es it nl pl at be "
+    "ch se no fi dk ie nz sg jp br mx ca au edu gov info me sh so tech "
+    "blog site online store js ts py json yaml yml xml mp3 wav exe pdf "
+    "md txt css html".split()
+)
+
+
 def _dot_join_match(match: "re.Match") -> str:
-    parts = re.split(r"\s+dot\s+", match.group(0), flags=re.I)
-    return ".".join(parts)
+    raw = match.group(0)
+    parts = re.split(r"\s+dot\s+", raw, flags=re.I)
+    lowered = [p.lower() for p in parts]
+    has_digit = any(re.search(r"\d", p) for p in parts)
+    has_known = any(p in _DOT_EVIDENCE for p in lowered)
+    all_short = all(len(p) <= 2 for p in parts)
+    if has_digit or has_known or all_short:
+        return ".".join(parts)
+    return raw
 
 
 def apply_corrections(text: str, pairs, smart_dots: bool = True) -> str:
@@ -504,17 +597,91 @@ def apply_corrections(text: str, pairs, smart_dots: bool = True) -> str:
     return out
 
 
-_FILLER_PAT = re.compile(r"(?i)\b(um+|uh+|hmm+|hm+|er+|ah+)(?=[,.]|\s|$)")
+# Hesitation sounds per language. English keeps the full set; other
+# languages only get unambiguous nasal fillers — "er" is a German
+# pronoun, "um" a German preposition, so they must survive there.
+_FILLER_WORDS = {
+    "en": ("erm", "uhm", "hmm", "umm", "um", "uh", "hm", "er", "ah"),
+    "de": ("ähm", "äh", "hmm", "hm", "mmm", "mm"),
+    "fr": ("euh", "hum", "hmm", "hm", "mmm", "mm"),
+    "es": ("eh", "em", "hmm", "hm", "mmm", "mm"),
+    "it": ("eh", "ehm", "em", "hmm", "hm", "mmm", "mm"),
+    "nl": ("eh", "ehm", "hmm", "hm", "mmm", "mm"),
+    "pl": ("yyy", "eee", "hmm", "hm", "mmm", "mm"),
+}
+_FILLER_PATS: dict[str, "re.Pattern"] = {}
+_FILLER_PAT = re.compile(r"(?i)\b(erm+|uhm+|hmm+|umm+|um+|uh+|hm+|er+|ah+)(?=[,.]|\s|$)")
 
 
-def remove_fillers(text: str) -> str:
-    """Drop hesitation sounds (um, uh, hmm) without touching real words."""
-    return _MULTI_SPACE.sub(" ", _FILLER_PAT.sub("", text or "")).strip()
+def _filler_pat(lang: str) -> "re.Pattern":
+    lang = (lang or "en").lower()[:2]
+    if lang == "en":
+        return _FILLER_PAT
+    pat = _FILLER_PATS.get(lang)
+    if pat is None:
+        words = _FILLER_WORDS.get(lang)
+        if not words:
+            return _FILLER_PAT
+        # Longest first so "hmm" wins over "hm"; trailing "+" allows
+        # elongated "hmmm", "ehm..." just like English "ummm".
+        alt = "|".join(re.escape(w[:-1]) + re.escape(w[-1]) + "+"
+                       for w in sorted(words, key=len, reverse=True))
+        pat = re.compile(r"(?i)\b(" + alt + r")(?=[,.]|\s|$)")
+        _FILLER_PATS[lang] = pat
+    return pat
+
+
+def remove_fillers(text: str, lang: str = "en") -> str:
+    """Drop hesitation sounds without touching real words.
+
+    Language-aware: German "er" (he) and "um" (around) are real words
+    and are only treated as fillers in English. Stray commas left
+    behind ("um, uh, hello" -> "hello") are cleaned up too.
+    """
+    if not text:
+        return ""
+    t = _filler_pat(lang).sub("", text)
+    t = re.sub(r",[ \t]*,", ",", t)      # ", ," -> ","
+    t = re.sub(r"^[,\s]+", "", t)         # leading ", " from filler start
+    t = re.sub(r"\s+,", ",", t)           # "hello ," -> "hello,"
+    t = re.sub(r",(\s*[.!?;:])", r"\1", t)  # comma stranded before end punct
+    # Collapse spaces/tabs only — newlines are voice-command breaks that
+    # clean_text() downstream must still see.
+    return re.sub(r"[ \t]{2,}", " ", t).strip()
+
+
+def filler_lang(detected: str, configured: str) -> str:
+    """Language to use for filler cleanup: prefer what the engine heard."""
+    if detected:
+        return detected
+    if configured and configured != "auto":
+        return configured
+    return "en"
 
 
 # --------------------------------------------------------------------------
 # Engines — Pro (turbo/CUDA) default, Flash (Whistle/CPU) fallback
 # --------------------------------------------------------------------------
+
+def _join_pro_segments(segments, no_speech_threshold: float = 0.6) -> str:
+    """Join faster-whisper segments, dropping likely hallucinations.
+
+    Segments the model itself flags with high no_speech_probability are
+    silence it tried to caption ("Thank you", music notes). Skipping
+    them beats pasting phantom text for quiet takes.
+    """
+    kept = []
+    for s in segments:
+        try:
+            if float(getattr(s, "no_speech_prob", 0.0) or 0.0) > no_speech_threshold:
+                continue
+        except Exception:
+            pass
+        t = (getattr(s, "text", "") or "").strip()
+        if t:
+            kept.append(t)
+    return " ".join(kept).strip()
+
 
 class ProEngine:
     MODEL_ID = "large-v3-turbo"
@@ -554,8 +721,6 @@ class ProEngine:
     def _decode(self, samples, language, hotwords, beam_size, vad,
                 prompt=None):
         import numpy as np
-        with self._lock:
-            model = self._model
         x = np.asarray(samples, dtype=np.float32).ravel()
         kwargs = dict(language=language, beam_size=beam_size,
                       vad_filter=vad, condition_on_previous_text=False,
@@ -564,8 +729,14 @@ class ProEngine:
             kwargs["hotwords"] = hotwords
         if prompt:
             kwargs["initial_prompt"] = prompt
-        segments, info = model.transcribe(x, **kwargs)
-        text = " ".join(s.text.strip() for s in segments).strip()
+        # Hold the lock for the whole decode: the live-partial thread and
+        # the final-transcribe thread otherwise race inside CTranslate2.
+        with self._lock:
+            model = self._model
+            if model is None:
+                raise RuntimeError("Pro engine is still loading.")
+            segments, info = model.transcribe(x, **kwargs)
+            text = _join_pro_segments(segments)
         lang = getattr(info, "language", "") or ""
         prob = float(getattr(info, "language_probability", 0.0) or 0.0)
         return text, lang, prob
@@ -640,10 +811,6 @@ class FlashEngine:
 
     def transcribe(self, audio_16k, language=None, hotwords=None) -> dict:
         import numpy as np
-        with self._lock:
-            model = self._model
-        if model is None:
-            raise RuntimeError("Flash engine is still loading.")
         samples = np.asarray(audio_16k, dtype=np.float32).ravel()
         if samples.size == 0:
             return {"text": "", "language": "", "total_ms": 0.0,
@@ -654,7 +821,11 @@ class FlashEngine:
         kws = [k.strip() for k in str(hotwords or "").replace(",", " ").split()
                if k.strip()] or None
         started = time.perf_counter()
-        result = model.transcribe(samples, language=language, keywords=kws)
+        with self._lock:
+            model = self._model
+            if model is None:
+                raise RuntimeError("Flash engine is still loading.")
+            result = model.transcribe(samples, language=language, keywords=kws)
         total_ms = (time.perf_counter() - started) * 1000.0
         dur = max(0.1, samples.size / SAMPLE_RATE)
         return {"text": result.get("text", ""),
@@ -671,10 +842,12 @@ class FlashEngine:
             x = np.asarray(audio_16k, dtype=np.float32).ravel()
             if x.size < SAMPLE_RATE // 2:
                 return ""
+            tail = x[-480000:] if x.size > 480000 else x
             with self._lock:
                 model = self._model
-            tail = x[-480000:] if x.size > 480000 else x
-            return (model.transcribe(tail, language=language).get("text") or "").strip()
+                if model is None:
+                    return ""
+                return (model.transcribe(tail, language=language).get("text") or "").strip()
         except Exception:
             return ""
 
@@ -859,30 +1032,37 @@ class MicRecorder:
             self._peaks = []
             self._level = 0.0
             self._recording = True
-        tried = []
-        for want in (SAMPLE_RATE, rate):
-            if want in tried:
-                continue
-            tried.append(want)
-            try:
-                stream = sd.InputStream(samplerate=want, channels=1,
-                                        dtype="float32", device=device,
-                                        latency="low", callback=self._callback)
-                stream.start()
-                self._stream = stream
-                self._rate = want
-                return want
-            except Exception:
-                continue
-        stream = sd.InputStream(channels=1, dtype="float32", device=device,
-                                callback=self._callback)
-        stream.start()
-        self._stream = stream
         try:
-            self._rate = int(stream.samplerate)
+            tried = []
+            for want in (SAMPLE_RATE, rate):
+                if want in tried:
+                    continue
+                tried.append(want)
+                try:
+                    stream = sd.InputStream(samplerate=want, channels=1,
+                                            dtype="float32", device=device,
+                                            latency="low", callback=self._callback)
+                    stream.start()
+                    self._stream = stream
+                    self._rate = want
+                    return want
+                except Exception:
+                    continue
+            stream = sd.InputStream(channels=1, dtype="float32", device=device,
+                                    callback=self._callback)
+            stream.start()
+            self._stream = stream
+            try:
+                self._rate = int(stream.samplerate)
+            except Exception:
+                self._rate = rate
+            return self._rate
         except Exception:
-            self._rate = rate
-        return self._rate
+            # Don't leave a phantom "recording" state with no stream —
+            # callers check .recording to decide whether to transcribe.
+            with self._lock:
+                self._recording = False
+            raise
 
     def snapshot(self):
         import numpy as np
@@ -1300,27 +1480,27 @@ class Overlay:
         except Exception:
             pass
         win.configure(fg_color=T["bg"])
-        # outer glow frame
-        glow = ctk.CTkFrame(win, fg_color=T["glow"], corner_radius=18)
-        glow.pack(padx=0, pady=0)
-        frame = ctk.CTkFrame(glow, fg_color="#171210", corner_radius=16,
-                             border_width=1, border_color=T["border"])
+        # hairline ring, card face — quiet, no neon glow
+        ring = ctk.CTkFrame(win, fg_color=T["border"], corner_radius=16)
+        ring.pack(padx=0, pady=0)
+        frame = ctk.CTkFrame(ring, fg_color=T["card"], corner_radius=15,
+                             border_width=0)
         frame.pack(padx=1, pady=1)
         self._status = ctk.CTkLabel(frame, text="● REC  0.0s",
                                     text_color=T["red"],
                                     font=("Segoe UI", 13, "bold"))
-        self._status.pack(anchor="w", padx=18, pady=(12, 2))
-        self._partial = ctk.CTkLabel(frame, text="", text_color=T["muted"],
+        self._status.pack(anchor="w", padx=20, pady=(14, 2))
+        self._partial = ctk.CTkLabel(frame, text="", text_color=T["fg"],
                                      font=("Segoe UI", 12),
-                                     wraplength=360, justify="left")
-        self._partial.pack(anchor="w", padx=18, pady=(0, 2))
-        self._sub = ctk.CTkLabel(frame, text="", text_color="#8a7a63",
+                                     wraplength=340, justify="left")
+        self._partial.pack(anchor="w", padx=20, pady=(0, 2))
+        self._sub = ctk.CTkLabel(frame, text="", text_color=T["dim"],
                                  font=("Segoe UI", 10, "italic"))
-        self._sub.pack(anchor="w", padx=18, pady=(0, 4))
-        self._bar = ctk.CTkProgressBar(frame, width=340, height=6,
+        self._sub.pack(anchor="w", padx=20, pady=(0, 6))
+        self._bar = ctk.CTkProgressBar(frame, width=320, height=4,
                                        progress_color=T["accent"],
-                                       fg_color="#2c2318")
-        self._bar.pack(padx=18, pady=(0, 14))
+                                       fg_color=T["card2"])
+        self._bar.pack(padx=20, pady=(0, 16))
         self._bar.set(0.0)
         self.win = win
         self.win.withdraw()
@@ -1441,6 +1621,7 @@ class DraftApp:
         self.tray = None
         self.stats = load_stats()
         self._boot = time.perf_counter()
+        self._last_stats_refresh = 0.0
 
         self.recording = False
         self.rec_started = 0.0
@@ -1481,19 +1662,58 @@ class DraftApp:
     def _card(self, parent, **kw):
         import customtkinter as ctk
         T = self.T
-        base = dict(fg_color=T["card"], corner_radius=18, border_width=1,
+        base = dict(fg_color=T["card"], corner_radius=20, border_width=1,
                     border_color=T["border"])
         base.update(kw)
         return ctk.CTkFrame(parent, **base)
 
-    def _omenu(self, parent, variable, values, width=170):
+    def _rule(self, parent, padx=16, pady=(6, 0)):
+        """Hairline divider — the quiet separator premium layouts use."""
+        import customtkinter as ctk
+        r = ctk.CTkFrame(parent, height=1, fg_color=self.T["hairline"])
+        r.pack(fill="x", padx=padx, pady=pady)
+        return r
+
+    def _ghost_btn(self, parent, text, command, width=88, height=30):
+        """Secondary outline button used across cards."""
+        import customtkinter as ctk
+        T = self.T
+        return ctk.CTkButton(parent, text=text, width=width, height=height,
+                             fg_color="transparent", hover_color=T["card2"],
+                             border_width=1, border_color=T["border"],
+                             text_color=T["fg"], corner_radius=10,
+                             font=F_BODY(11), command=command)
+
+    def _primary_btn(self, parent, text, command, width=120, height=32):
+        """Primary accent button — one per surface, never more."""
+        import customtkinter as ctk
+        T = self.T
+        return ctk.CTkButton(parent, text=text, width=width, height=height,
+                             fg_color=T["accent"],
+                             hover_color=T["accent_hover"],
+                             text_color=T["accent_ink"], corner_radius=10,
+                             font=("Segoe UI", 12, "bold"), command=command)
+
+    def _field(self, parent, textvariable, width=180):
+        """Text entry that actually matches the theme (no default grey)."""
+        import customtkinter as ctk
+        T = self.T
+        return ctk.CTkEntry(parent, textvariable=textvariable, width=width,
+                            height=34, corner_radius=10,
+                            fg_color=T["field"], border_color=T["border"],
+                            text_color=T["fg"],
+                            placeholder_text_color=T["dim"],
+                            font=F_BODY(12))
+
+    def _omenu(self, parent, variable, values, width=180):
         import customtkinter as ctk
         T = self.T
         return ctk.CTkOptionMenu(parent, variable=variable, values=values,
-                                 width=width, fg_color=T["card2"],
+                                 width=width, height=34, corner_radius=10,
+                                 fg_color=T["field"],
                                  button_color=T["accent"],
                                  button_hover_color=T["accent_hover"],
-                                 text_color=T["fg"],
+                                 text_color=T["fg"], font=F_BODY(12),
                                  dropdown_fg_color=T["card2"],
                                  dropdown_hover_color=T["border"],
                                  dropdown_text_color=T["fg"])
@@ -1505,214 +1725,287 @@ class DraftApp:
 
     def _section(self, parent, text):
         import customtkinter as ctk
-        return ctk.CTkLabel(parent, text=text.upper(), text_color=self.T["accent"],
-                            font=("Segoe UI", 10, "bold"))
+        return ctk.CTkLabel(parent, text=text.upper(),
+                            text_color=self.T["muted"],
+                            font=("Segoe UI Variable Text", 10, "bold"))
 
     def _build_window(self):
         import customtkinter as ctk
         T = self.T
         r = self.root
         r.title(f"{APP_NAME} — local speech to text")
-        r.geometry("470x790")
-        r.minsize(430, 640)
+        r.geometry("1080x760")
+        r.minsize(900, 650)
         r.configure(fg_color=T["bg"])
         try:
             ctypes.windll.shcore.SetProcessDpiAwareness(1)
         except Exception:
             pass
 
-        # Header — serif wordmark
-        head = ctk.CTkFrame(r, fg_color="transparent")
-        head.pack(fill="x", padx=20, pady=(16, 2))
-        self.status_dot = ctk.CTkLabel(head, text="●", text_color=T["yellow"],
-                                       font=("Segoe UI", 15))
-        self.status_dot.pack(side="left")
-        ctk.CTkLabel(head, text=f" {APP_NAME}  ", text_color=T["fg"],
-                     font=F_HEAD(21)).pack(side="left")
-        ctk.CTkLabel(head, text="golden hour edition", text_color=T["rose"],
-                     font=("Georgia", 11, "italic")).pack(side="left",
-                                                          pady=(7, 0))
-        pill = ctk.CTkFrame(head, fg_color=T["card"], corner_radius=12,
-                            border_width=1, border_color=T["border"])
-        pill.pack(side="right")
-        self.pill_dot = ctk.CTkLabel(pill, text="●", text_color=T["yellow"],
-                                     font=("Segoe UI", 11))
-        self.pill_dot.pack(side="left", padx=(10, 0))
-        self.status_label = ctk.CTkLabel(pill, text="loading…",
-                                         text_color=T["fg"],
-                                         font=("Segoe UI", 11, "bold"))
-        self.status_label.pack(side="left", padx=(4, 10), pady=5)
-        self.engine_badge = ctk.CTkLabel(head, text="…", text_color=T["accent"],
-                                         font=("Segoe UI", 10, "bold"),
-                                         corner_radius=6, border_width=1,
-                                         border_color=T["border"])
-        self.engine_badge.pack(side="right", padx=(0, 8))
+        # Application shell — a permanent navigation rail and a focused work
+        # space replace the old narrow, stacked-dashboard layout.
+        shell = ctk.CTkFrame(r, fg_color="transparent")
+        shell.pack(fill="both", expand=True, padx=16, pady=16)
+        rail = ctk.CTkFrame(shell, width=210, fg_color=T["card"],
+                            corner_radius=24, border_width=1,
+                            border_color=T["border"])
+        rail.pack(side="left", fill="y")
+        rail.pack_propagate(False)
+        workspace = ctk.CTkFrame(shell, fg_color="transparent")
+        workspace.pack(side="left", fill="both", expand=True, padx=(16, 0))
 
-        # Tab bar — Dictate / History / Settings
-        tabbar = ctk.CTkFrame(r, fg_color="transparent")
-        tabbar.pack(fill="x", padx=16, pady=(2, 6))
+        brand = ctk.CTkFrame(rail, fg_color="transparent")
+        brand.pack(fill="x", padx=22, pady=(26, 8))
+        self.status_dot = ctk.CTkLabel(brand, text="●", text_color=T["green"],
+                                       font=("Segoe UI Variable Text", 11))
+        self.status_dot.pack(side="left", padx=(0, 7))
+        ctk.CTkLabel(brand, text=APP_NAME, text_color=T["fg"],
+                     font=F_HEAD(24)).pack(side="left")
+        ctk.CTkLabel(rail, text="LOCAL VOICE WORKSPACE", text_color=T["dim"],
+                     font=("Segoe UI Variable Text", 9, "bold")).pack(
+                         anchor="w", padx=22, pady=(0, 26))
+
         self._tab_btns = {}
         self._tab_frames = {}
-        for _name in ("Dictate", "History", "Settings"):
-            _b = ctk.CTkButton(tabbar, text=_name, height=34,
-                               fg_color=T["card"], hover_color=T["card2"],
-                               text_color=T["muted"], corner_radius=10,
-                               font=("Segoe UI", 12, "bold"),
+        for _name, _title, _subtitle in (
+            ("Dictate", "Studio", "Capture a thought while it is fresh"),
+            ("History", "Library", "Review and reuse past dictation"),
+            ("Settings", "Preferences", "Make Draft work your way"),
+        ):
+            _b = ctk.CTkButton(rail, text=_title, anchor="w", height=44,
+                               fg_color="transparent", hover_color=T["card2"],
+                               text_color=T["muted"], corner_radius=12,
+                               font=("Segoe UI Variable Text", 13, "bold"),
                                command=lambda n=_name: self._show_tab(n))
-            _b.pack(side="left", expand=True, fill="x", padx=3)
+            _b.pack(fill="x", padx=12, pady=2)
             self._tab_btns[_name] = _b
-            _f = ctk.CTkFrame(r, fg_color="transparent")
+            _f = ctk.CTkFrame(workspace, fg_color="transparent")
             self._tab_frames[_name] = _f
+
+        ctk.CTkFrame(rail, height=1, fg_color=T["hairline"]).pack(
+            fill="x", padx=22, pady=(22, 12))
+        ctk.CTkLabel(rail, text="PRIVATE BY DESIGN", text_color=T["muted"],
+                     font=("Segoe UI Variable Text", 9, "bold")).pack(
+                         anchor="w", padx=22)
+        ctk.CTkLabel(rail, text="Audio stays on your device.", text_color=T["dim"],
+                     font=F_BODY(11), wraplength=155, justify="left").pack(
+                         anchor="w", padx=22, pady=(4, 0))
+        ctk.CTkLabel(rail, text=f"v{APP_VERSION}", text_color=T["dim"],
+                     font=F_MONO(9)).pack(side="bottom", anchor="w", padx=22, pady=22)
+
+        # Context bar sits above every workspace view.
+        head = ctk.CTkFrame(workspace, fg_color="transparent")
+        head.pack(fill="x", pady=(10, 12))
+        copy = ctk.CTkFrame(head, fg_color="transparent")
+        copy.pack(side="left")
+        self.view_title = ctk.CTkLabel(copy, text="Studio", text_color=T["fg"],
+                                       font=F_HEAD(28))
+        self.view_title.pack(anchor="w")
+        self.view_subtitle = ctk.CTkLabel(copy, text="Capture a thought while it is fresh",
+                                          text_color=T["muted"], font=F_BODY(12))
+        self.view_subtitle.pack(anchor="w", pady=(1, 0))
+        side = ctk.CTkFrame(head, fg_color="transparent")
+        side.pack(side="right")
+        self.engine_badge = ctk.CTkLabel(side, text="…", text_color=T["muted"],
+                                         font=F_MONO(9),
+                                         corner_radius=999, border_width=1,
+                                         border_color=T["hairline"])
+        self.engine_badge.pack(side="left", padx=(0, 8), pady=4)
+        pill = ctk.CTkFrame(side, fg_color=T["card2"], corner_radius=999,
+                            border_width=1, border_color=T["border"])
+        pill.pack(side="left")
+        self.pill_dot = ctk.CTkLabel(pill, text="●", text_color=T["yellow"],
+                                     font=("Segoe UI Variable Text", 9))
+        self.pill_dot.pack(side="left", padx=(12, 0))
+        self.status_label = ctk.CTkLabel(pill, text="loading…",
+                                         text_color=T["fg"],
+                                         font=("Segoe UI Variable Text", 10, "bold"))
+        self.status_label.pack(side="left", padx=(5, 12), pady=6)
         tabD = ctk.CTkScrollableFrame(self._tab_frames["Dictate"],
-                                      fg_color="transparent")
+                                      fg_color="transparent", corner_radius=0)
         tabD.pack(fill="both", expand=True)
         tabH = self._tab_frames["History"]
         tabS = ctk.CTkScrollableFrame(self._tab_frames["Settings"],
-                                      fg_color="transparent")
+                                       fg_color="transparent", corner_radius=0)
         tabS.pack(fill="both", expand=True)
         self._show_tab("Dictate")
 
-        # Talk card — circular hero button + living waveform
+        # Dictation is deliberately the first and largest surface.
         card = self._card(tabD)
-        card.pack(fill="x", padx=16, pady=8)
+        card.pack(fill="x", padx=24, pady=(14, 8))
+        ctk.CTkLabel(card, text="LIVE CAPTURE", text_color=T["accent"],
+                     font=("Segoe UI Variable Text", 10, "bold")).pack(
+                         anchor="w", padx=24, pady=(22, 0))
+        hero = ctk.CTkFrame(card, fg_color="transparent")
+        hero.pack(fill="x", padx=22, pady=(2, 2))
+        art = ctk.CTkFrame(hero, fg_color="transparent", width=230)
+        art.pack(side="left", fill="y")
+        art.pack_propagate(False)
+        actions = ctk.CTkFrame(hero, fg_color="transparent")
+        actions.pack(side="left", fill="both", expand=True, padx=(8, 18), pady=(28, 0))
+        ctk.CTkLabel(actions, text="Speak naturally.\nDraft handles the rest.",
+                     text_color=T["fg"], justify="left", anchor="w",
+                     font=F_HEAD(23)).pack(anchor="w")
+        self._hlabel(actions, "Hold to capture, then release when you are done.",
+                     11).pack(anchor="w", pady=(8, 14))
         import tkinter as tk
-        from PIL import ImageTk
+        from PIL import Image, ImageTk
         self._mic_art = MicArt(T)
-        self._mic_photo = self._mic_art.idle_photo()
-        self.mic_icon = tk.Label(card, image=self._mic_photo, bg=T["card"],
+        self._static_orb = False
+        try:
+            orb = Image.open(resource_path("studio-orb.png")).convert("RGBA")
+            orb.thumbnail((208, 208), Image.Resampling.LANCZOS)
+            self._mic_photo = ImageTk.PhotoImage(orb)
+            self._static_orb = True
+        except Exception:
+            self._mic_photo = self._mic_art.idle_photo()
+        self.mic_icon = tk.Label(art, image=self._mic_photo, bg=T["card"],
                                  cursor="hand2")
-        self.mic_icon.pack(pady=(10, 0))
+        self.mic_icon.pack(pady=(0, 0))
         self.mic_icon.bind("<ButtonPress-1>", self._button_hold_start)
         self.mic_icon.bind("<ButtonRelease-1>", self._button_hold_stop)
         self._mic_state = "idle"
         self._mic_phase = 0.0
         self._wave_phase = 0.0
-        self.mic_button = ctk.CTkLabel(card, text="HOLD TO TALK",
-                                       text_color=T["accent"],
-                                       font=("Segoe UI", 12, "bold"))
-        self.mic_button.pack(pady=(0, 2))
-        self.hero_line = ctk.CTkLabel(card, text="Ready to write",
-                                      text_color=T["muted"],
-                                      font=("Georgia", 14, "italic"))
-        self.hero_line.pack(pady=(0, 2))
+        self.mic_button = ctk.CTkButton(actions, text="HOLD TO TALK",
+                                         width=210, height=44,
+                                         fg_color=T["accent"],
+                                         hover_color=T["accent_hover"],
+                                         text_color=T["accent_ink"],
+                                         corner_radius=999,
+                                         font=("Segoe UI Variable Text", 13, "bold"))
+        self.mic_button.pack(anchor="w")
+        self.mic_button.bind("<ButtonPress-1>", self._button_hold_start,
+                             add="+")
+        self.mic_button.bind("<ButtonRelease-1>", self._button_hold_stop,
+                             add="+")
+        self.hero_line = ctk.CTkLabel(actions, text="Ready to write",
+                                      text_color=T["fg"],
+                                      font=F_BODY(15))
+        self.hero_line.pack(anchor="w", pady=(12, 1))
         self._btn_down = False
         self._btn_press_ms: int | None = None
-        self._hlabel(card, "Hold the circle, speak, release.   F9 toggles.",
-                     11).pack(pady=(0, 2))
         self.timer_label = ctk.CTkLabel(card, text="", text_color=T["muted"],
-                                        font=F_BODY(11))
-        self.timer_label.pack(pady=(0, 6))
+                                        font=F_MONO(11))
+        self.timer_label.pack(anchor="w", padx=44, pady=(0, 0))
         self.level_bar = None
-        self.wave = tk.Canvas(card, width=380, height=76, bg=T["card"],
+        self.wave = tk.Canvas(card, width=720, height=64, bg=T["card"],
                               highlightthickness=0)
-        self.wave.pack(pady=(0, 12))
+        self.wave.pack(fill="x", padx=24, pady=(0, 16))
         self._draw_wave()
 
-        # Result card
+        # A working document, not a small secondary card.
         res = self._card(tabD)
-        res.pack(fill="x", padx=16, pady=4)
-        self._section(res, "Last result").pack(anchor="w", padx=14,
-                                                  pady=(10, 0))
-        ctk.CTkFrame(res, height=2, fg_color=T["accent"]).pack(
-            fill="x", padx=14, pady=(4, 0))
-        self.result_box = ctk.CTkTextbox(res, height=66, corner_radius=10,
-                                          border_width=1,
-                                          border_color=T["border"],
-                                          fg_color="#ece1d0",
-                                          text_color="#241a10",
-                                          font=("Segoe UI", 13))
-        self.result_box.pack(fill="x", padx=12, pady=6)
+        res.pack(fill="x", padx=24, pady=8)
+        rhead = ctk.CTkFrame(res, fg_color="transparent")
+        rhead.pack(fill="x", padx=20, pady=(18, 0))
+        self._section(rhead, "Latest transcript").pack(side="left")
+        self._hlabel(rhead, "Edits save automatically", 10).pack(side="right")
+        self._rule(res, padx=20, pady=(10, 0))
+        tpanel = ctk.CTkFrame(res, fg_color="transparent")
+        tpanel.pack(fill="x", padx=16, pady=(10, 8))
+        ctk.CTkFrame(tpanel, width=3, fg_color=T["accent"],
+                     corner_radius=2).pack(side="left", fill="y",
+                                           padx=(0, 10))
+        self.result_box = ctk.CTkTextbox(tpanel, height=150, corner_radius=14,
+                                         border_width=1,
+                                         border_color=T["hairline"],
+                                         fg_color=T["field"],
+                                         text_color=T["fg"],
+                                         font=("Segoe UI", 13))
+        self.result_box.pack(side="left", fill="x", expand=True)
         brow = ctk.CTkFrame(res, fg_color="transparent")
-        brow.pack(fill="x", padx=12, pady=(0, 4))
+        brow.pack(fill="x", padx=20, pady=(0, 8))
         for label, cmd in (("Copy", self._copy_result),
                            ("Paste", self._paste_result),
                            ("WAV…", self._transcribe_file)):
-            ctk.CTkButton(brow, text=label, width=82, height=28,
-                          fg_color="transparent", hover_color=T["card2"],
-                          border_width=1, border_color=T["border"],
-                          text_color=T["fg"], font=F_BODY(11),
-                          command=cmd).pack(side="left", padx=(0, 8))
-        self.timing_label = ctk.CTkLabel(res, text="", text_color=T["muted"],
+            self._ghost_btn(brow, label, cmd).pack(side="left", padx=(0, 8))
+        self.timing_label = ctk.CTkLabel(res, text="", text_color=T["dim"],
                                          font=F_MONO(10),
                                          anchor="w", justify="left")
-        self.timing_label.pack(fill="x", padx=14, pady=(0, 10))
+        self.timing_label.pack(fill="x", padx=18, pady=(0, 12))
 
         # Compose card (only in compose mode)
         self.compose_card = self._card(tabD)
         self._section(self.compose_card, "Compose  — takes gather here"
-                        ).pack(anchor="w", padx=14, pady=(10, 0))
-        self.compose_box = ctk.CTkTextbox(self.compose_card, height=70,
+                        ).pack(anchor="w", padx=18, pady=(14, 0))
+        self._rule(self.compose_card, padx=18, pady=(8, 0))
+        self.compose_box = ctk.CTkTextbox(self.compose_card, height=78,
                                           corner_radius=10, border_width=1,
                                           border_color=T["border"],
-                                          fg_color=T["card2"],
+                                          fg_color=T["field"],
                                           text_color=T["fg"],
-                                          font=F_BODY(12))
-        self.compose_box.pack(fill="x", padx=12, pady=6)
+                                          font=F_BODY(13))
+        self.compose_box.pack(fill="x", padx=16, pady=(10, 8))
         crow = ctk.CTkFrame(self.compose_card, fg_color="transparent")
-        crow.pack(fill="x", padx=12, pady=(0, 10))
+        crow.pack(fill="x", padx=16, pady=(0, 12))
         for label, cmd in (("Paste all", self._compose_paste),
                            ("Copy all", self._compose_copy),
                            ("Clear", self._compose_clear)):
-            ctk.CTkButton(crow, text=label, width=82, height=28,
-                          fg_color=T["card2"], hover_color=T["border"],
-                          text_color=T["fg"], font=F_BODY(11),
-                          command=cmd).pack(side="left", padx=(0, 8))
+            self._ghost_btn(crow, label, cmd).pack(side="left", padx=(0, 8))
         if self.cfg.get("paste_mode") == "compose":
-            self.compose_card.pack(fill="x", padx=16, pady=4)
+            self.compose_card.pack(fill="x", padx=24, pady=8)
 
-        # Stats tiles + week chart
+        # Stats strip — bare numbers, no box
         tiles = ctk.CTkFrame(tabD, fg_color="transparent")
-        tiles.pack(fill="x", padx=16, pady=4)
+        tiles.pack(fill="x", padx=32, pady=(16, 4))
         self._tiles = {}
-        _names = (("words", "words"), ("takes", "takes"),
-                  ("saved", "min saved"), ("streak", "day streak"))
+        _names = (("words", "WORDS"), ("takes", "TAKES"),
+                  ("saved", "MIN SAVED"), ("streak", "DAY STREAK"))
         for _i, (_key, _cap) in enumerate(_names):
             if _i > 0:
-                _div = ctk.CTkFrame(tiles, width=1, fg_color=T["border"])
-                _div.pack(side="left", fill="y", padx=8, pady=12)
+                _div = ctk.CTkFrame(tiles, width=1, fg_color=T["hairline"])
+                _div.pack(side="left", fill="y", padx=4, pady=10)
             _f = ctk.CTkFrame(tiles, fg_color="transparent")
             _f.pack(side="left", expand=True, fill="x")
-            _num = ctk.CTkLabel(_f, text="0", text_color=T["accent"],
-                                font=("Georgia", 24, "bold"))
+            _num = ctk.CTkLabel(_f, text="0", text_color=T["fg"],
+                                font=F_HEAD(25))
             _num.pack()
-            ctk.CTkLabel(_f, text=_cap, text_color=T["muted"],
-                         font=F_BODY(10)).pack()
+            ctk.CTkLabel(_f, text=_cap, text_color=T["dim"],
+                         font=("Segoe UI Variable Text", 9, "bold")).pack()
             self._tiles[_key] = _num
         week = self._card(tabD)
-        week.pack(fill="x", padx=16, pady=4)
+        week.pack(fill="x", padx=24, pady=(8, 12))
         self._section(week, "This week  ·  words per day").pack(
-            anchor="w", padx=14, pady=(10, 0))
-        self.week_canvas = tk.Canvas(week, width=380, height=96, bg=T["card"],
+            anchor="w", padx=18, pady=(14, 0))
+        self._rule(week, padx=18, pady=(8, 0))
+        self.week_canvas = tk.Canvas(week, width=400, height=96, bg=T["card"],
                                      highlightthickness=0)
-        self.week_canvas.pack(padx=14, pady=(2, 10))
+        self.week_canvas.pack(padx=16, pady=(4, 12))
         self._draw_week()
 
-        # History card
+        # Library — a quiet archive rather than a pile of tiny buttons.
         hist = self._card(tabH)
-        hist.pack(fill="both", expand=True, padx=16, pady=4)
+        hist.pack(fill="both", expand=True, padx=24, pady=(14, 12))
         hhead = ctk.CTkFrame(hist, fg_color="transparent")
-        hhead.pack(fill="x", padx=14, pady=(10, 2))
-        self._section(hhead, "History  ·  click an item to copy it"
-                        ).pack(side="left")
-        ctk.CTkButton(hhead, text="Export", width=64, height=24,
-                      fg_color=T["card2"], hover_color=T["border"],
-                      text_color=T["fg"], font=F_BODY(10),
-                      command=self._export_history).pack(side="right")
+        hhead.pack(fill="x", padx=24, pady=(22, 4))
+        hcopy = ctk.CTkFrame(hhead, fg_color="transparent")
+        hcopy.pack(side="left")
+        self._section(hcopy, "Your library").pack(anchor="w")
+        ctk.CTkLabel(hcopy, text="Every completed take, ready to reuse.",
+                     text_color=T["fg"], font=F_HEAD(20)).pack(anchor="w", pady=(2, 0))
+        self._ghost_btn(hhead, "Export", self._export_history,
+                        width=82, height=34).pack(side="right", pady=6)
+        self._rule(hist, padx=24, pady=(8, 0))
         self.history_frame = ctk.CTkScrollableFrame(hist, height=96,
-                                                     fg_color="transparent")
-        self.history_frame.pack(fill="both", expand=True, padx=8, pady=6)
+                                                     fg_color="transparent", corner_radius=0)
+        self.history_frame.pack(fill="both", expand=True, padx=18, pady=12)
         self._refresh_history()
 
         # Settings card
         setup = self._card(tabS)
-        setup.pack(fill="x", padx=16, pady=(4, 6))
-        self._section(setup, "Settings").pack(anchor="w", padx=14,
-                                                 pady=(8, 2))
+        setup.pack(fill="x", padx=24, pady=(14, 12))
+        self._section(setup, "Personalise Draft").pack(anchor="w", padx=18,
+                                                        pady=(18, 0))
+        ctk.CTkLabel(setup, text="Preferences", text_color=T["fg"],
+                     font=F_HEAD(20)).pack(anchor="w", padx=18, pady=(2, 0))
+        self._rule(setup, padx=18, pady=(8, 0))
         grid = ctk.CTkFrame(setup, fg_color="transparent")
-        grid.pack(fill="x", padx=14, pady=2)
+        grid.pack(fill="x", padx=18, pady=(6, 2))
         grid.columnconfigure(1, weight=1)
 
-        self.var_theme = ctk.StringVar(value=self.cfg.get("theme", "golden"))
+        self.var_theme = ctk.StringVar(value=THEME_LABELS.get(
+            self.cfg.get("theme", "golden"), "Obsidian"))
         self.var_mode = ctk.StringVar(value=self.cfg.get("engine_mode", "pro"))
         self.var_paste = ctk.StringVar(value=self.cfg.get("paste_mode", "direct"))
         self.var_lang = ctk.StringVar(value=self.cfg.get("language", "auto"))
@@ -1731,104 +2024,114 @@ class DraftApp:
         self.var_minimized = ctk.BooleanVar(value=bool(self.cfg.get("start_minimized", False)))
 
         self.mic_menu = self._omenu(grid, variable=self.var_mic,
-                                      values=["default"], width=170)
+                                      values=["default"])
         rows = (
-            ("Theme", self._omenu(grid, variable=self.var_theme,
-                                   values=list(THEME_NAMES), width=170)),
+            ("Appearance", self._omenu(grid, variable=self.var_theme,
+                                         values=list(THEME_KEYS_BY_LABEL))),
             ("Engine  (pro · flash)",
              self._omenu(grid, variable=self.var_mode,
-                          values=list(ENGINE_MODES), width=170)),
+                          values=list(ENGINE_MODES))),
             ("Paste  (direct · compose)",
              self._omenu(grid, variable=self.var_paste,
-                          values=list(PASTE_MODES), width=170)),
+                          values=list(PASTE_MODES))),
             ("Language",
              self._omenu(grid, variable=self.var_lang,
-                          values=list(LANGUAGES), width=170)),
+                          values=list(LANGUAGES))),
             ("Microphone", self.mic_menu),
-            ("Hold hotkey", ctk.CTkEntry(grid, textvariable=self.var_hold,
-                                         width=170)),
-            ("Toggle hotkey", ctk.CTkEntry(grid, textvariable=self.var_toggle,
-                                           width=170)),
-            ("Dashboard hotkey", ctk.CTkEntry(grid, textvariable=self.var_dashkey,
-                                           width=170)),
+            ("Hold hotkey", self._field(grid, self.var_hold)),
+            ("Toggle hotkey", self._field(grid, self.var_toggle)),
+            ("Dashboard hotkey", self._field(grid, self.var_dashkey)),
         )
         for i, (label, widget) in enumerate(rows):
             ctk.CTkLabel(grid, text=label, text_color=T["muted"],
-                         font=F_BODY(11)).grid(row=i, column=0, sticky="w",
-                                               pady=3)
-            widget.grid(row=i, column=1, sticky="e", pady=3, padx=(8, 0))
+                         font=F_BODY(12)).grid(row=i, column=0, sticky="w",
+                                               pady=4)
+            widget.grid(row=i, column=1, sticky="e", pady=4, padx=(8, 0))
 
         # Hotwords manager
         hw = ctk.CTkFrame(setup, fg_color="transparent")
-        hw.pack(fill="x", padx=14, pady=(4, 2))
+        hw.pack(fill="x", padx=18, pady=(10, 2))
         ctk.CTkLabel(hw, text="✎  Hotwords  ·  names and products, biased at decode",
-                     text_color=T["muted"], font=F_BODY(11)).pack(anchor="w")
+                     text_color=T["fg"], font=("Segoe UI", 12, "bold")).pack(
+                         anchor="w")
         hwrow = ctk.CTkFrame(hw, fg_color="transparent")
-        hwrow.pack(fill="x", pady=(4, 2))
-        self.hw_entry = ctk.CTkEntry(hwrow, width=200,
-                                     placeholder_text="Add a name…")
+        hwrow.pack(fill="x", pady=(6, 2))
+        self.hw_entry = ctk.CTkEntry(hwrow, width=220, height=30,
+                                     corner_radius=8, fg_color=T["field"],
+                                     border_color=T["border"],
+                                     text_color=T["fg"],
+                                     placeholder_text_color=T["dim"],
+                                     placeholder_text="Add a name…",
+                                     font=F_BODY(12))
         self.hw_entry.pack(side="left", padx=(0, 8))
         self.hw_entry.bind("<Return>", lambda _e: self._hw_add())
-        ctk.CTkButton(hwrow, text="Add", width=64, height=28,
-                      fg_color=T["card2"], hover_color=T["border"],
-                      text_color=T["fg"], font=F_BODY(11),
-                      command=self._hw_add).pack(side="left")
+        self._ghost_btn(hwrow, "Add", self._hw_add, width=72).pack(side="left")
         self.hw_chips = ctk.CTkFrame(hw, fg_color="transparent")
-        self.hw_chips.pack(fill="x", pady=(2, 2))
+        self.hw_chips.pack(fill="x", pady=(4, 2))
         self._refresh_hw_chips()
 
         # Taught words — guaranteed corrections
         tw = ctk.CTkFrame(setup, fg_color="transparent")
-        tw.pack(fill="x", padx=14, pady=(4, 2))
+        tw.pack(fill="x", padx=18, pady=(10, 2))
         ctk.CTkLabel(tw, text="★  Taught words  ·  what it hears → what you mean",
-                     text_color=T["muted"], font=F_BODY(11)).pack(anchor="w")
+                     text_color=T["fg"], font=("Segoe UI", 12, "bold")).pack(
+                         anchor="w")
         twrow = ctk.CTkFrame(tw, fg_color="transparent")
-        twrow.pack(fill="x", pady=(4, 2))
-        self.taught_hears = ctk.CTkEntry(twrow, width=130,
-                                         placeholder_text="Hears: tiroop")
+        twrow.pack(fill="x", pady=(6, 2))
+        self.taught_hears = ctk.CTkEntry(twrow, width=140, height=30,
+                                         corner_radius=8, fg_color=T["field"],
+                                         border_color=T["border"],
+                                         text_color=T["fg"],
+                                         placeholder_text_color=T["dim"],
+                                         placeholder_text="Hears: tiroop",
+                                         font=F_BODY(12))
         self.taught_hears.pack(side="left", padx=(0, 6))
-        self.taught_writes = ctk.CTkEntry(twrow, width=130,
-                                          placeholder_text="Write: Tirup")
+        self.taught_writes = ctk.CTkEntry(twrow, width=140, height=30,
+                                          corner_radius=8, fg_color=T["field"],
+                                          border_color=T["border"],
+                                          text_color=T["fg"],
+                                          placeholder_text_color=T["dim"],
+                                          placeholder_text="Write: Tirup",
+                                          font=F_BODY(12))
         self.taught_writes.pack(side="left", padx=(0, 8))
         self.taught_hears.bind("<Return>", lambda _e: self._taught_add())
         self.taught_writes.bind("<Return>", lambda _e: self._taught_add())
-        ctk.CTkButton(twrow, text="Teach", width=64, height=28,
-                      fg_color=T["accent"], hover_color=T["accent_hover"],
-                      text_color="#1a120a", font=F_BODY(11),
-                      command=self._taught_add).pack(side="left")
+        self._primary_btn(twrow, "Teach", self._taught_add,
+                          width=76, height=30).pack(side="left")
         self.taught_chips = ctk.CTkFrame(tw, fg_color="transparent")
-        self.taught_chips.pack(fill="x", pady=(2, 2))
+        self.taught_chips.pack(fill="x", pady=(4, 2))
         self._refresh_taught_chips()
 
         chk = ctk.CTkFrame(setup, fg_color="transparent")
-        chk.pack(fill="x", padx=14, pady=4)
-        for text, var in (("Auto-paste", self.var_autopaste),
-                          ("Clipboard", self.var_clipboard),
-                          ("Live words", self.var_partials),
-                          ("Commands", self.var_commands),
-                          ("No fillers", self.var_fillers),
-                          ("Smart dots", self.var_dots),
-                          ("Sounds", self.var_sounds),
-                          ("Autostart", self.var_autostart),
-                          ("Start in tray", self.var_minimized)):
+        chk.pack(fill="x", padx=18, pady=(10, 4))
+        for _col in range(3):
+            chk.columnconfigure(_col, weight=1)
+        _switches = (("Auto-paste", self.var_autopaste),
+                     ("Clipboard", self.var_clipboard),
+                     ("Live words", self.var_partials),
+                     ("Commands", self.var_commands),
+                     ("No fillers", self.var_fillers),
+                     ("Smart dots", self.var_dots),
+                     ("Sounds", self.var_sounds),
+                     ("Autostart", self.var_autostart),
+                     ("Start in tray", self.var_minimized))
+        for _i, (text, var) in enumerate(_switches):
             ctk.CTkSwitch(chk, text=text, variable=var,
                           progress_color=T["accent"],
-                          font=F_BODY(11)).pack(side="left", padx=(0, 8),
-                                                pady=2)
+                          fg_color=T["card2"], button_color=T["dim"],
+                          button_hover_color=T["accent"],
+                          text_color=T["fg"],
+                          font=F_BODY(12)).grid(row=_i // 3, column=_i % 3,
+                                                sticky="w", padx=(0, 8),
+                                                pady=4)
         brow2 = ctk.CTkFrame(setup, fg_color="transparent")
-        brow2.pack(fill="x", padx=14, pady=(2, 10))
-        ctk.CTkButton(brow2, text="Reload engines", width=120, height=30,
-                      fg_color=T["card2"], hover_color=T["border"],
-                      text_color=T["fg"], font=F_BODY(11),
-                      command=self._reload_engines).pack(side="left")
-        ctk.CTkButton(brow2, text="Logs", width=80, height=30,
-                      fg_color=T["card2"], hover_color=T["border"],
-                      text_color=T["fg"], font=F_BODY(11),
-                      command=self._open_logs).pack(side="left", padx=(8, 0))
-        ctk.CTkButton(brow2, text="Save settings", width=120, height=30,
-                      fg_color=T["accent"], hover_color=T["accent_hover"],
-                      text_color="#1a120a", font=("Segoe UI", 12, "bold"),
-                      command=self._save_settings).pack(side="right")
+        brow2.pack(fill="x", padx=18, pady=(8, 14))
+        self._ghost_btn(brow2, "Reload engines", self._reload_engines,
+                        width=124, height=32).pack(side="left")
+        self._ghost_btn(brow2, "Logs", self._open_logs,
+                        width=72, height=32).pack(side="left", padx=(8, 0))
+        self._primary_btn(brow2, "Save settings", self._save_settings,
+                          width=132, height=32).pack(side="right")
 
         self.log_label = None  # logs live in the log file, not the UI
 
@@ -1949,6 +2252,14 @@ class DraftApp:
 
     def _show_tab(self, name: str):
         try:
+            labels = {
+                "Dictate": ("Studio", "Capture a thought while it is fresh"),
+                "History": ("Library", "Review and reuse past dictation"),
+                "Settings": ("Preferences", "Make Draft work your way"),
+            }
+            title, subtitle = labels[name]
+            self.view_title.configure(text=title)
+            self.view_subtitle.configure(text=subtitle)
             for n, f in self._tab_frames.items():
                 if n == name:
                     f.pack(fill="both", expand=True, padx=0, pady=0)
@@ -1956,10 +2267,12 @@ class DraftApp:
                     f.pack_forget()
             for n, b in self._tab_btns.items():
                 if n == name:
-                    b.configure(fg_color=self.T["accent"],
-                                text_color="#1a120a")
+                    b.configure(fg_color=self.T["card2"],
+                                hover_color=self.T["card2"],
+                                text_color=self.T["fg"])
                 else:
-                    b.configure(fg_color=self.T["card"],
+                    b.configure(fg_color="transparent",
+                                hover_color=self.T["card2"],
                                 text_color=self.T["muted"])
         except Exception:
             pass
@@ -1967,6 +2280,8 @@ class DraftApp:
     def _draw_mic(self):
         """Swap the hero art: cached idle disc, live rings when recording."""
         try:
+            if getattr(self, "_static_orb", False):
+                return
             from PIL import ImageTk
             if self._mic_state == "recording":
                 self._mic_phase += 0.35
@@ -1983,7 +2298,7 @@ class DraftApp:
             import math
             c, T = self.wave, self.T
             c.delete("all")
-            W, H = 380, 76
+            W, H = max(380, c.winfo_width()), 64
             if self.recording:
                 peaks = self.mic.peaks_snapshot()
                 if len(peaks) >= 2:
@@ -2067,7 +2382,10 @@ class DraftApp:
             w.attributes("-topmost", True)
             w.configure(fg_color=T["card"])
             ctk.CTkLabel(w, text="Draft", text_color=T["accent"],
-                         font=F_HEAD(28)).pack(pady=(20, 2))
+                         font=F_HEAD(28)).pack(pady=(20, 0))
+            ctk.CTkLabel(w, text=f"v{APP_VERSION}  ·  noir edition",
+                         text_color=T["dim"],
+                         font=("Segoe UI", 10, "bold")).pack(pady=(0, 2))
             ctk.CTkLabel(w, text="hold  ·  speak  ·  done",
                          text_color=T["muted"],
                          font=F_BODY(12)).pack(pady=(0, 12))
@@ -2207,8 +2525,9 @@ class DraftApp:
         try:
             audio = np.asarray(audio, dtype=np.float32).ravel()
             clean, had_speech = preprocess(audio)
-            if clean.size == 0 or (not had_speech
-                                   and clean.size < SAMPLE_RATE // 4):
+            if clean.size == 0 or not had_speech:
+                # Below the energy-VAD floor even after auto-gain: decoding
+                # this would only produce hallucinations ("Thank you").
                 self._call_in_ui(self._on_empty, "No speech detected.")
                 return
             pro = self.engines.mode == "pro"
@@ -2234,11 +2553,15 @@ class DraftApp:
                                      smart_dots=bool(
                                          self.cfg.get("smart_dots", True)))
             if self.cfg.get("remove_fillers", True):
-                text = remove_fillers(text)
+                text = remove_fillers(
+                    text, filler_lang(result.get("language") or "",
+                                      self.cfg.get("language", "auto")))
             if self.cfg.get("clean_output", True):
                 text = clean_text(
                     text, trailing_space=bool(
-                        self.cfg.get("trailing_space", True)))
+                        self.cfg.get("trailing_space", True)),
+                    lang=filler_lang(result.get("language") or "",
+                                     self.cfg.get("language", "auto")))
             elif self.cfg.get("trailing_space", True) and text \
                     and not text.endswith(" "):
                 text += " "
@@ -2612,7 +2935,10 @@ class DraftApp:
             vals = vals / scale
             if rate != SAMPLE_RATE:
                 vals = resample_to_16k(vals, rate)
-            clean, _ = preprocess(vals)
+            clean, had_speech = preprocess(vals)
+            if clean.size == 0 or not had_speech:
+                self._call_in_ui(self._on_empty, "No speech detected.")
+                return
             pro = self.engines.mode == "pro"
             result = self.engines.transcribe(
                 clean, language=lang_or_none(self.cfg.get("language", "auto"),
@@ -2624,10 +2950,14 @@ class DraftApp:
                                      smart_dots=bool(
                                          self.cfg.get("smart_dots", True)))
             if self.cfg.get("remove_fillers", True):
-                text = remove_fillers(text)
+                text = remove_fillers(
+                    text, filler_lang(result.get("language") or "",
+                                      self.cfg.get("language", "auto")))
             if self.cfg.get("clean_output", True):
                 text = clean_text(
-                    text, trailing_space=bool(self.cfg.get("trailing_space", True)))
+                    text, trailing_space=bool(self.cfg.get("trailing_space", True)),
+                    lang=filler_lang(result.get("language") or "",
+                                     self.cfg.get("language", "auto")))
             self._call_in_ui(self._on_result, text, result)
         except Exception as exc:  # noqa: BLE001
             log.exception("file")
@@ -2646,8 +2976,7 @@ class DraftApp:
 
     def _save_history(self):
         try:
-            with open(HISTORY_PATH, "w", encoding="utf-8") as fh:
-                json.dump(self.history[-100:], fh, ensure_ascii=False, indent=1)
+            _atomic_write_json(HISTORY_PATH, self.history[-100:])
         except Exception as exc:
             log.warning("save_history: %s", exc)
 
@@ -2666,12 +2995,19 @@ class DraftApp:
                 child.destroy()
             items = list(reversed(self.history[-15:]))
             if not items:
-                ctk.CTkLabel(self.history_frame, text="Nothing yet — hold "
-                             "Right Ctrl and speak.", text_color=T["muted"],
-                             font=F_BODY(11)).pack(anchor="w", padx=6, pady=4)
+                empty = ctk.CTkFrame(self.history_frame, fg_color=T["field"],
+                                     corner_radius=16, border_width=1,
+                                     border_color=T["hairline"])
+                empty.pack(fill="x", padx=6, pady=8)
+                ctk.CTkLabel(empty, text="Your first thought starts here.",
+                             text_color=T["fg"], font=F_HEAD(16)).pack(
+                                 anchor="w", padx=18, pady=(18, 2))
+                ctk.CTkLabel(empty, text="Hold Right Ctrl, speak, and release to save a take.",
+                             text_color=T["muted"], font=F_BODY(11)).pack(
+                                 anchor="w", padx=18, pady=(0, 18))
                 return
             for _i, item in enumerate(items):
-                preview = item.get("text", "").replace("\n", " ⏎ ")[:58]
+                preview = item.get("text", "").replace("\n", " ").strip()
                 full = item.get("text", "")
 
                 def _copy(t=full):
@@ -2682,14 +3018,20 @@ class DraftApp:
                     except Exception as exc:
                         self._append_log(f"Copy failed: {exc}")
 
-                ctk.CTkButton(self.history_frame,
-                              text=f"{item.get('t', '')}  {preview}",
-                              anchor="w",
-                              fg_color=T["glow"] if _i == 0 else T["card2"],
-                              hover_color=T["border"], corner_radius=8,
-                              height=30, text_color=T["fg"],
-                              font=F_BODY(11),
-                              command=_copy).pack(fill="x", padx=2, pady=2)
+                row = ctk.CTkButton(self.history_frame, text="", anchor="w",
+                                    fg_color=T["field"], hover_color=T["card2"],
+                                    corner_radius=14, height=76, border_width=1,
+                                    border_color=T["accent"] if _i == 0 else T["hairline"],
+                                    command=_copy)
+                row.pack(fill="x", padx=2, pady=5)
+                ctk.CTkLabel(row, text=preview or "Untitled take", text_color=T["fg"],
+                             anchor="w", justify="left", wraplength=560,
+                             font=F_BODY(13)).place(x=18, y=15)
+                ctk.CTkLabel(row, text=f"{item.get('t', '')}  ·  {item.get('lang', 'auto').upper()}",
+                             text_color=T["dim"], anchor="w",
+                             font=("Segoe UI Variable Text", 9, "bold")).place(x=18, y=49)
+                ctk.CTkLabel(row, text="COPY", text_color=T["accent"],
+                             font=("Segoe UI Variable Text", 9, "bold")).place(relx=1.0, x=-52, y=31)
         except Exception:
             pass
 
@@ -2723,9 +3065,11 @@ class DraftApp:
                 return
             for w in words:
                 ctk.CTkButton(self.hw_chips, text=f"{w}  ×", width=28,
-                              height=24, fg_color=T["card2"],
+                              height=26, fg_color=T["field"],
                               hover_color=T["border"], text_color=T["fg"],
-                              font=F_BODY(10),
+                              border_width=1, border_color=T["border"],
+                              corner_radius=999,
+                              font=F_BODY(11),
                               command=lambda w=w: self._hw_remove(w)).pack(
                                   side="left", padx=(0, 6), pady=2)
         except Exception:
@@ -2776,9 +3120,11 @@ class DraftApp:
                 return
             for wrong, right in pairs[:12]:
                 ctk.CTkButton(self.taught_chips, text=f"{wrong} → {right}  ×",
-                              height=24, fg_color=T["card2"],
+                              height=26, fg_color=T["field"],
                               hover_color=T["border"], text_color=T["fg"],
-                              font=F_BODY(10),
+                              border_width=1, border_color=T["border"],
+                              corner_radius=999,
+                              font=F_BODY(11),
                               command=lambda w=wrong: self._taught_remove(w)).pack(
                                   side="left", padx=(0, 6), pady=2)
         except Exception:
@@ -2816,7 +3162,7 @@ class DraftApp:
     def _apply_paste_mode_visibility(self):
         try:
             if self.cfg.get("paste_mode") == "compose":
-                self.compose_card.pack(fill="x", padx=16, pady=4)
+                self.compose_card.pack(fill="x", padx=24, pady=8)
             else:
                 self.compose_card.pack_forget()
         except Exception:
@@ -2824,7 +3170,8 @@ class DraftApp:
 
     def _save_settings(self):
         prev_theme = self.cfg.get("theme", "golden")
-        self.cfg["theme"] = self.var_theme.get()
+        self.cfg["theme"] = THEME_KEYS_BY_LABEL.get(
+            self.var_theme.get(), self.cfg.get("theme", "golden"))
         self.cfg["engine_mode"] = self.var_mode.get()
         self.cfg["paste_mode"] = self.var_paste.get()
         self.cfg["language"] = self.var_lang.get()
@@ -2921,7 +3268,9 @@ class DraftApp:
                     self._draw_wave()
                 except Exception:
                     pass
-            if int(time.perf_counter() - self._boot) % 30 == 0:
+            now = time.perf_counter()
+            if now - self._last_stats_refresh >= 30.0:
+                self._last_stats_refresh = now
                 self._refresh_stats()
         except Exception:
             pass

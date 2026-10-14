@@ -1,11 +1,11 @@
 @echo off
-REM Draft v2 — one-click installer (Windows)
+REM Draft v3 — one-click installer (Windows)
 REM Installs everything + pre-downloads speech models (one time).
 setlocal
 cd /d "%~dp0"
 
 echo ============================================
-echo  Draft installer (v2)
+echo  Draft installer (v3)
 echo ============================================
 
 where py >nul 2>nul

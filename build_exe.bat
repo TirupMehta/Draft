@@ -4,12 +4,27 @@ REM Bundles its own GPU math libs (cublas) so no CUDA Toolkit is needed.
 setlocal
 cd /d "%~dp0"
 
-set PYBIN=C:\Users\Tirup Mehta\AppData\Local\Programs\Python\Python313\python.exe
-set SPKG=C:\Users\Tirup Mehta\AppData\Local\Programs\Python\Python313\Lib\site-packages
+REM Portable Python detection: PYBIN env override wins, else py launcher.
+if not defined PYBIN (
+  for /f "delims=" %%P in ('py -3.13 -c "import sys; print(sys.executable)" 2^>nul') do set PYBIN=%%P
+)
+if not defined PYBIN (
+  for /f "delims=" %%P in ('py -c "import sys; print(sys.executable)" 2^>nul') do set PYBIN=%%P
+)
+if not defined PYBIN set PYBIN=python
+if not defined SPKG (
+  for /f "delims=" %%P in ('py -3.13 -c "import sysconfig; print(sysconfig.get_paths()['purelib'])" 2^>nul') do set SPKG=%%P
+)
+if not defined SPKG (
+  for /f "delims=" %%P in ('py -c "import sysconfig; print(sysconfig.get_paths()['purelib'])" 2^>nul') do set SPKG=%%P
+)
+echo Using Python: %PYBIN%
+echo Site-packages: %SPKG%
 
 "%PYBIN%" -m PyInstaller --noconfirm --clean ^
   --name Draft --onedir --windowed ^
   --icon assets\icon.ico --splash assets\splash.png --version-file assets\version.txt ^
+  --add-data "assets\studio-orb.png;assets" ^
   --collect-all customtkinter ^
   --collect-all faster_whisper ^
   --collect-all ctranslate2 ^
